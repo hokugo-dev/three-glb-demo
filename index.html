@@ -22,17 +22,18 @@
     </script>
 </head>
 <body>
-    <div class="container mx-auto h-screen">
-        <h1 class="text-4xl font-bold">three-glb-demo</h1>
-        <canvas id="canvas-three" class="w-full h-full"></canvas>
+    <div class="relative container mx-auto h-screen">
+        <h1 class="absolute top-0 left-0 text-4xl font-bold text-white z-10">three-glb-demo</h1>
+        <canvas id="canvas-three" class="absolute top-0 left-0 w-full h-full"></canvas>
     </div>
+
     <script type="module">
       import * as THREE from 'three';
       import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
       const canvas = document.getElementById('canvas-three');
       const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(
+      let camera = new THREE.PerspectiveCamera(
         75,
         canvas.clientWidth / canvas.clientHeight,
         0.1,
@@ -45,40 +46,127 @@
       // シーン背景色
       scene.background = new THREE.Color(0x181633);
 
-      // ライトを追加
+      // アンビエントライト（必ず使用）
       const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
       scene.add(ambientLight);
-      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+
+      // デフォルトのディレクショナルライト（GLBにライトがない場合に使用）
+      let directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
       directionalLight.position.set(5, 10, 5);
       scene.add(directionalLight);
 
       // GLBファイルを読み込む
       const loader = new GLTFLoader();
-      loader.load(
-        './assets/unicorn.glb',
-        (gltf) => {
+      (async () => {
+        try {
+          const gltf = await loader.loadAsync('./assets/unicorn.glb');
           scene.add(gltf.scene);
           
-          // モデルを中央に配置するためにバウンディングボックスを計算
-          const box = new THREE.Box3().setFromObject(gltf.scene);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
+          // GLBからカメラを取得
+          let glbCamera = null;
           
-          // カメラの位置を調整
-          const maxDim = Math.max(size.x, size.y, size.z);
-          const fov = camera.fov * (Math.PI / 180);
-          let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
-          cameraZ *= 1.5; // 少し離す
-          camera.position.set(center.x, center.y, center.z + cameraZ);
-          camera.lookAt(center);
-        },
-        (progress) => {
-          console.log('Loading progress:', (progress.loaded / progress.total * 100) + '%');
-        },
-        (error) => {
+          // gltf.cameras配列から取得
+          if (gltf.cameras && gltf.cameras.length > 0) {
+            glbCamera = gltf.cameras[0];
+          } else {
+            // シーン内を走査してカメラを探す
+            gltf.scene.traverse((object) => {
+              if (object instanceof THREE.Camera && !glbCamera) {
+                glbCamera = object;
+              }
+            });
+          }
+          console.log(glbCamera);
+
+          if (glbCamera) {
+            // カメラのプロパティをコピー
+            if (glbCamera instanceof THREE.PerspectiveCamera) {
+              camera.fov = glbCamera.fov;
+              camera.aspect = canvas.clientWidth / canvas.clientHeight;
+              camera.near = glbCamera.near;
+              camera.far = glbCamera.far;
+              camera.updateProjectionMatrix();
+            } else if (glbCamera instanceof THREE.OrthographicCamera) {
+              // OrthographicCameraの場合は新しく作成
+              const newCamera = new THREE.OrthographicCamera(
+                glbCamera.left,
+                glbCamera.right,
+                glbCamera.top,
+                glbCamera.bottom,
+                glbCamera.near,
+                glbCamera.far
+              );
+              newCamera.position.copy(glbCamera.position);
+              newCamera.rotation.copy(glbCamera.rotation);
+              newCamera.quaternion.copy(glbCamera.quaternion);
+              // camera変数を更新（アニメーションループで使用される）
+              camera = newCamera;
+            }
+            
+            // カメラの位置と回転をコピー
+            camera.position.copy(glbCamera.position);
+            camera.rotation.copy(glbCamera.rotation);
+            camera.quaternion.copy(glbCamera.quaternion);
+            if (glbCamera.target) {
+              camera.lookAt(glbCamera.target);
+            }
+          } else {
+            // GLBにカメラがない場合、モデルを中央に配置するためにバウンディングボックスを計算
+            const box = new THREE.Box3().setFromObject(gltf.scene);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            
+            // カメラの位置を調整
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const fov = camera.fov * (Math.PI / 180);
+            let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+            cameraZ *= 1.5; // 少し離す
+            camera.position.set(center.x, center.y, center.z + cameraZ);
+            camera.lookAt(center);
+          }
+
+          // GLBからライトを取得（AmbientLight以外）
+          const glbLights = [];
+          gltf.scene.traverse((object) => {
+            if (object instanceof THREE.Light && !(object instanceof THREE.AmbientLight)) {
+              object.intensity /= 683;
+              glbLights.push(object);
+            }
+          });
+
+          if (glbLights.length > 0) {
+            // GLBにライトがある場合、既存のディレクショナルライトを削除
+            scene.remove(directionalLight);
+            
+            // GLBのライトをシーンに追加（コピーを作成）
+            glbLights.forEach((glbLight) => {
+              let newLight;
+              if (glbLight instanceof THREE.DirectionalLight) {
+                newLight = new THREE.DirectionalLight(glbLight.color, glbLight.intensity);
+                newLight.position.copy(glbLight.position);
+                newLight.target.position.copy(glbLight.target.position);
+              } else if (glbLight instanceof THREE.PointLight) {
+                newLight = new THREE.PointLight(glbLight.color, glbLight.intensity, glbLight.distance, glbLight.decay);
+                newLight.position.copy(glbLight.position);
+              } else if (glbLight instanceof THREE.SpotLight) {
+                newLight = new THREE.SpotLight(glbLight.color, glbLight.intensity, glbLight.distance, glbLight.angle, glbLight.penumbra, glbLight.decay);
+                newLight.position.copy(glbLight.position);
+                newLight.target.position.copy(glbLight.target.position);
+              } else if (glbLight instanceof THREE.HemisphereLight) {
+                newLight = new THREE.HemisphereLight(glbLight.color, glbLight.groundColor, glbLight.intensity);
+                newLight.position.copy(glbLight.position);
+              } else {
+                // その他のライトタイプ
+                newLight = glbLight.clone();
+              }
+              scene.add(newLight);
+            });
+          }
+          // GLBにライトがない場合は、既存のディレクショナルライトをそのまま使用
+        } catch (error) {
           console.error('Error loading GLB:', error);
         }
-      );
+      })();
 
       // アニメーションループ
       function animate() {
@@ -89,8 +177,11 @@
 
       // ウィンドウリサイズ時の処理
       window.addEventListener('resize', () => {
-        camera.aspect = canvas.clientWidth / canvas.clientHeight;
-        camera.updateProjectionMatrix();
+        if (camera instanceof THREE.PerspectiveCamera) {
+          camera.aspect = canvas.clientWidth / canvas.clientHeight;
+          camera.updateProjectionMatrix();
+        }
+        // OrthographicCameraの場合は手動で調整する必要がある場合がある
         renderer.setSize(canvas.clientWidth, canvas.clientHeight);
       });
     </script>
