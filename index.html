@@ -1,18 +1,163 @@
 <html>
 <head>
-    <title>three-glb-demo</title>
-    <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, user-scalable=no" />
-    <style>
-      body {
-        margin: 0;
-        padding: 0;
+  <title>three-glb-demo</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+    }
+  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
       }
-    </style>
+    }
+  </script>
 </head>
 <body>
-    <h1>demo</h1>
+  <div class="relative container mx-auto h-screen">
+    <h1 class="absolute top-0 left-0 text-4xl font-bold text-white z-10">three-glb-demo</h1>
+    <canvas id="canvas-three" class="absolute top-0 left-0 w-full h-full"></canvas>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    const canvas = document.getElementById('canvas-three');
+    const scene = new THREE.Scene();
+    let camera = new THREE.PerspectiveCamera(
+      75,
+      canvas.clientWidth / canvas.clientHeight,
+      0.1,
+      1000
+    );
+    const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+
+    // シーン背景色
+    scene.background = new THREE.Color(0x181633);
+
+    // 環境光
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+
+    // デフォルトのライト（GLBにライトがない場合に使用）
+    let directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(5, 10, 5);
+    scene.add(directionalLight);
+
+    // GLBファイルを読み込む
+    const loader = new GLTFLoader();
+    (async () => {
+      try {
+        const gltf = await loader.loadAsync('./assets/unicorn.glb');
+
+        // GLBのライトを取得
+        const glbLights = [];
+        gltf.scene.traverse(object => {
+          if (object instanceof THREE.DirectionalLight) {
+            glbLights.push(object);
+          }
+        });
+
+        // GLBのライトを調節
+        if (glbLights.length > 0) {
+          glbLights.forEach(light => {
+            // ライトの強度を調整
+            light.intensity /= 683;
+          });
+          // GLBにライトがある場合、既存のディレクショナルライトを削除
+          scene.remove(directionalLight);
+        }
+
+        scene.add(gltf.scene);
+        
+        // GLBからカメラを取得
+        let glbCamera = null;
+        if (gltf.cameras && gltf.cameras.length > 0) {
+          glbCamera = gltf.cameras[0];
+        } else {
+          gltf.scene.traverse((object) => {
+            if (object instanceof THREE.Camera && !glbCamera) {
+              glbCamera = object;
+            }
+          });
+        }
+
+        // カメラ設定
+        if (glbCamera) {
+          if (glbCamera instanceof THREE.PerspectiveCamera) {
+            // glbのカメラをコピー
+            camera.fov = glbCamera.fov;
+            camera.aspect = canvas.clientWidth / canvas.clientHeight;
+            camera.near = glbCamera.near;
+            camera.far = glbCamera.far;
+            camera.updateProjectionMatrix();
+          } else if (glbCamera instanceof THREE.OrthographicCamera) {
+            // OrthographicCameraの場合は新しく作成
+            const newCamera = new THREE.OrthographicCamera(
+              glbCamera.left,
+              glbCamera.right,
+              glbCamera.top,
+              glbCamera.bottom,
+              glbCamera.near,
+              glbCamera.far
+            );
+            newCamera.position.copy(glbCamera.position);
+            newCamera.rotation.copy(glbCamera.rotation);
+            newCamera.quaternion.copy(glbCamera.quaternion);
+            camera = newCamera;
+          }
+          
+          // カメラの位置と回転をコピー
+          camera.position.copy(glbCamera.position);
+          camera.rotation.copy(glbCamera.rotation);
+          camera.quaternion.copy(glbCamera.quaternion);
+          if (glbCamera.target) {
+            camera.lookAt(glbCamera.target);
+          }
+        } else {
+          // GLBにカメラがない場合、モデルを中央に配置するためにバウンディングボックスを計算
+          const box = new THREE.Box3().setFromObject(gltf.scene);
+          const center = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
+          
+          // カメラの位置を調整
+          const maxDim = Math.max(size.x, size.y, size.z);
+          const fov = camera.fov * (Math.PI / 180);
+          let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+          cameraZ *= 1.5; // 少し離す
+          camera.position.set(center.x, center.y, center.z + cameraZ);
+          camera.lookAt(center);
+        }
+      } catch (error) {
+        console.error('Error loading GLB:', error);
+      }
+    })();
+
+    // アニメーションループ
+    function animate() {
+      requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // ウィンドウリサイズ時の処理
+    window.addEventListener('resize', () => {
+      if (camera instanceof THREE.PerspectiveCamera) {
+        camera.aspect = canvas.clientWidth / canvas.clientHeight;
+        camera.updateProjectionMatrix();
+      }
+      // OrthographicCameraの場合は手動で調整する必要がある場合がある
+      renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    });
+  </script>
 </body>
 </html>
